@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <title>{% block title %}TextFlow{% endblock %}</title>
+
+    <!-- Bulma -->
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bulma/css/bulma.min.css"
+    />
+
+    <!--  CSS -->
+    <link rel="stylesheet" href="/static/css/style.css" />
+  </head>
+
+  <body class="{% block body_class %}{% endblock %}">
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+      <a href="/">Accueil</a>
+      <a href="/donnees">Données</a>
+      <a href="/scripts">Scripts</a>
+      <a href="/pipeline">Pipeline</a>
+      <a href="/essais">Essais</a>
+      <a href="/observations">Observations</a>
+      <a href="/membres">Membres</a>
+    </aside>
+
+    <!-- CONTENU -->
+    <div class="content">
+      <!-- HERO -->
+      <section class="hero">
+        <h1 class="title">🌊 TextFlow</h1>
+        <p class="subtitle">Insérez vos idées au bon endroit</p>
+      </section>
+
+      {% block content %}{% endblock %}
+
+      <!-- FOOTER -->
+      <footer>
+        <p>Projet M2 TAL — Oumaya Chelbi, Inês Barreiros, Zijun Yang</p>
+      </footer>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,2144 @@
+<!-- web/templates/documentation.html -->
+{% extends "base.html" %}
+
+{% block title %}Documentation - Scripts du projet{% endblock %}
+{% block page_theme %}docs-theme{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1> Scripts du projet</h1>
+    <p>L'ensemble des scripts utilisés pour la collecte, le traitement et l'entraînement ainsi que l'evaluation des modèles</p>
+</div>
+
+<div class="content-section">
+    <h2> Scripts de collecte des données</h2>
+    
+    <!-- Script 1 : Téléchargement arXiv -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">download_arxiv_pdfs.py</span>
+            <span class="script-badge">arXiv</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Télécharger des articles scientifiques depuis arXiv (catégorie cs.CL)</p>
+            <pre><code class="language-python">import requests
+import os
+import feedparser
+
+# Dossier où on va sauvegarder les PDFs
+SAVE_DIR = "arxiv_pdfs"
+os.makedirs(SAVE_DIR, exist_ok=True)  # Crée le dossier s'il n'existe pas
+
+# Requête pour récupérer des articles en informatique (cs.CL = Computation and Language)
+QUERY = "cat:cs.CL"
+MAX_RESULTS = 650  # Nombre max d'articles qu'on veut
+
+# Construction de l'URL pour interroger l'API arXiv
+url = (
+    "http://export.arxiv.org/api/query?"
+    f"search_query={QUERY}&start=0&max_results={MAX_RESULTS}"
+)
+
+# On parse le résultat (format Atom/RSS)
+feed = feedparser.parse(url)
+
+# Pour chaque article trouvé
+for entry in feed.entries:
+
+    # On récupère l'ID de l'article (ex: 2401.12345)
+    arxiv_id = entry.id.split("/")[-1]
+    
+    # Le deuxième lien est celui du PDF
+    pdf_url = entry.links[1].href
+
+    # Chemin où sauvegarder le fichier
+    out_path = os.path.join(SAVE_DIR, arxiv_id + ".pdf")
+
+    # Si le fichier existe déjà, on passe (évite de retélécharger)
+    if os.path.exists(out_path):
+        continue
+
+    print("Téléchargement :", arxiv_id)
+
+    # Téléchargement du PDF
+    r = requests.get(pdf_url)
+    
+    # Sauvegarde en binaire (mode 'wb')
+    with open(out_path, "wb") as f:
+        f.write(r.content)</code></pre>
+        </div>
+    </details>
+    
+    <!-- Script 2 : Extraction texte arXiv -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">extract_arxiv_texts.py</span>
+            <span class="script-badge">arXiv</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Convertir les PDF arXiv en fichiers texte exploitables</p>
+            <pre><code class="language-python">import os
+import fitz   # PyMuPDF - bibliothèque pour lire les PDFs
+import sys
+
+# Dossiers d'entrée et de sortie
+PDF_DIR = "arxiv_pdfs"
+OUT_DIR = "arxiv_texts"
+
+# Création du dossier de sortie
+os.makedirs(OUT_DIR, exist_ok=True)
+
+
+def extract_text(pdf_path):
+    """Extrait le texte d'un PDF"""
+    
+    try:
+        # On ouvre le PDF
+        doc = fitz.open(pdf_path)
+        
+        # Vérification que le PDF est valide
+        if doc.is_closed or doc.needs_pass:
+            print(f"  ⚠ Document invalide ou protégé: {pdf_path}")
+            return None
+            
+        full_text = []
+        
+        # On parcourt chaque page du PDF
+        for page_num in range(len(doc)):
+            try:
+                page = doc[page_num]
+                text = page.get_text()  # Extraction du texte de la page
+                
+                # On ne garde que les pages non vides
+                if text and text.strip():
+                    full_text.append(text)
+                    
+            except Exception as e:
+                print(f"  ⚠ Erreur sur la page {page_num} de {os.path.basename(pdf_path)}: {str(e)}")
+                continue
+        
+        # On ferme le document
+        doc.close()
+        
+        # Si on n'a rien extrait, on retourne None
+        if not full_text:
+            print(f"  Aucun texte extrait de: {os.path.basename(pdf_path)}")
+            return None
+            
+        # On retourne tout le texte en une seule chaîne
+        return "\n".join(full_text)
+        
+    except Exception as e:
+        print(f"   Erreur lors de l'extraction de {os.path.basename(pdf_path)}: {str(e)}")
+        return None
+
+
+def extract_text_alternative(pdf_path):
+    """Méthode alternative si la première échoue"""
+    
+    try:
+        doc = fitz.open(pdf_path)
+        full_text = []
+        
+        for page_num in range(len(doc)):
+            try:
+                page = doc[page_num]
+                
+                # Première méthode : extraction en texte brut
+                text = page.get_text("text")
+                
+                # Si ça ne marche pas, on essaye mot par mot
+                if not text or not text.strip():
+                    text = page.get_text("words")  # Extraction mot par mot
+                    if text:
+                        # On reconstruit le texte à partir des mots
+                        text = " ".join([word[4] for word in text if len(word) > 4])
+                
+                if text and text.strip():
+                    full_text.append(text)
+                    
+            except Exception as e:
+                print(f" Erreur méthode alternative page {page_num}: {str(e)}")
+                continue
+                
+        doc.close()
+        
+        if full_text:
+            return "\n".join(full_text)
+        return None
+        
+    except Exception as e:
+        print(f" Erreur méthode alternative: {str(e)}")
+        return None
+
+
+def process_pdfs():
+    """Traite tous les PDFs du répertoire"""
+    
+    # Compteurs pour les statistiques
+    total_pdfs = 0
+    success_count = 0
+    failed_count = 0
+    corrupted_count = 0
+    
+    # On liste tous les fichiers PDF
+    pdf_files = [f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")]
+    total_pdfs = len(pdf_files)
+    
+    print(f"\n {total_pdfs} fichiers PDF trouvés dans {PDF_DIR}\n")
+    
+    # On traite chaque fichier un par un
+    for i, file in enumerate(pdf_files, 1):
+        pdf_path = os.path.join(PDF_DIR, file)
+        
+        print(f" [{i}/{total_pdfs}] Traitement: {file}")
+        
+        # Essai de la méthode standard
+        txt = extract_text(pdf_path)
+        
+        # Si ça échoue, on essaye la méthode alternative
+        if txt is None:
+            print(f"   Tentative avec méthode alternative...")
+            txt = extract_text_alternative(pdf_path)
+            if txt is not None:
+                print(f"  Réussi avec méthode alternative!")
+        
+        # Si on a réussi à extraire du texte
+        if txt is not None and txt.strip():
+            out_path = os.path.join(OUT_DIR, file.replace(".pdf", ".txt"))
+            
+            try:
+                # Sauvegarde du texte dans un fichier .txt
+                with open(out_path, "w", encoding="utf8") as f:
+                    f.write(txt)
+                    
+                print(f" Sauvegardé: {os.path.basename(out_path)} ({len(txt)} caractères)")
+                success_count += 1
+                
+            except Exception as e:
+                print(f"  Erreur sauvegarde: {str(e)}")
+                failed_count += 1
+        else:
+            # Si l'extraction a échoué
+            try:
+                file_size = os.path.getsize(pdf_path)
+                if file_size < 1000:
+                    print(f" Fichier suspect (taille: {file_size} octets)")
+                else:
+                    print(f" Échec extraction")
+                corrupted_count += 1
+            except:
+                corrupted_count += 1
+    
+    # Rapport final
+    print(f"\n" + "="*50)
+    print(f" RAPPORT FINAL")
+    print(f"="*50)
+    print(f"Total PDFs trouvés: {total_pdfs}")
+    print(f"Extractions réussies: {success_count}")
+    print(f"Échecs extraction: {failed_count}")
+    print(f"Fichiers corrompus: {corrupted_count}")
+    print(f"Textes sauvegardés dans: {OUT_DIR}")
+    print(f"="*50)
+
+
+if __name__ == "__main__":
+    
+    # Vérification que le dossier source existe
+    if not os.path.exists(PDF_DIR):
+        print(f" Erreur: Le répertoire {PDF_DIR} n'existe pas!")
+        sys.exit(1)
+    
+    print(" Début du traitement des PDFs arXiv")
+    print(f" Source: {PDF_DIR}")
+    print(f" Destination: {OUT_DIR}")
+    
+    # On lance le traitement
+    process_pdfs()
+    
+    print("\n Traitement terminé!")</code></pre>
+        </div>
+    </details>
+    
+    <!-- Script 3 : Téléchargement PMC -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">download_pmc_xml.py</span>
+            <span class="script-badge">PMC</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Télécharger des articles biomédicaux depuis PubMed Central</p>
+            <pre><code class="language-python">import requests
+import os
+import time
+
+# Dossier où on va sauvegarder les fichiers XML
+SAVE_DIR = "pmc_xml"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# ==========================================
+# ÉTAPE 1 : Recherche des IDs des articles
+# ==========================================
+
+# URL de recherche des articles PMC
+search_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+
+# Paramètres de la requête
+params = {
+    "db": "pmc",                    # Base de données : PubMed Central
+    "term": "open access[filter]",  # On veut uniquement les articles en libre accès
+    "retmax": 650                   # Nombre max d'articles
+}
+
+print("Recherche des IDs PMC...")
+
+# On envoie la requête
+r = requests.get(search_url, params=params, timeout=30)
+r.raise_for_status()  # Lève une erreur si la requête a échoué
+
+# On extrait les IDs de la réponse XML
+ids = []
+for line in r.text.split("<Id>")[1:]:
+    ids.append(line.split("</Id>")[0])
+
+print(len(ids), "IDs trouvés")
+
+# ==========================================
+# ÉTAPE 2 : Téléchargement des fichiers XML
+# ==========================================
+
+# Pour chaque ID trouvé
+for pmc_id in ids:
+
+    # URL pour récupérer le contenu de l'article
+    fetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+    params = {
+        "db": "pmc",
+        "id": pmc_id,
+        "retmode": "xml"   # On veut le format XML
+    }
+
+    out_path = os.path.join(SAVE_DIR, pmc_id + ".xml")
+
+    # Si le fichier existe déjà, on passe (évite de retélécharger)
+    if os.path.exists(out_path):
+        print("Déjà présent :", pmc_id)
+        continue
+
+    print("Téléchargement PMC", pmc_id)
+
+    try:
+        # Téléchargement du fichier XML
+        r = requests.get(fetch_url, params=params, timeout=30)
+
+        if r.status_code != 200:
+            print("  -> erreur HTTP", r.status_code)
+            continue
+
+        # Sauvegarde du fichier
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(r.text)
+
+    except requests.exceptions.RequestException as e:
+        print("  -> erreur réseau pour", pmc_id)
+        print("     ", e)
+        continue
+
+    # Pause pour éviter de surcharger le serveur
+    time.sleep(1)</code></pre>
+        </div>
+    </details>
+</div>
+
+<div class="content-section">
+    <h2> Scripts de génération des datasets</h2>
+    
+    <!-- Script 4 : Génération dataset Wikipédia -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">generate_wiki.py</span>
+            <span class="script-badge">Wikipédia</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Générer des exemples d'insertion à partir des articles Wikipédia</p>
+            <pre><code class="language-python">import os
+import json
+import random
+from tqdm import tqdm
+
+# Configuration
+INPUT_DIR = "extracted"        # Dossier où sont les articles Wikipédia extraits
+OUTPUT_FILE = "wiki_dataset.jsonl"  # Fichier de sortie
+
+MIN_PARAGRAPHS = 5             # Minimum de paragraphes pour garder un article
+MAX_SAMPLES_PER_ARTICLE = 1    # Nombre d'exemples par article
+
+
+def clean_paragraphs(text):
+    """Nettoie le texte en gardant uniquement les paragraphes valides"""
+    
+    # On découpe par sauts de ligne
+    paragraphs = text.split("\n")
+    
+    # On ne garde que les paragraphes non vides et assez longs
+    paragraphs = [
+        p.strip()
+        for p in paragraphs
+        if len(p.strip()) > 80  # On ignore les paragraphes trop courts
+    ]
+    
+    return paragraphs
+
+
+def generate_examples_from_text(title, text):
+    """
+    À partir d'un article, génère des exemples où on retire un paragraphe
+    et on demande au modèle de le réinsérer
+    """
+    
+    # On nettoie le texte
+    paragraphs = clean_paragraphs(text)
+    
+    # Si l'article n'a pas assez de paragraphes, on l'ignore
+    if len(paragraphs) < MIN_PARAGRAPHS:
+        return []
+    
+    examples = []
+    
+    # On génère un exemple par article (ou plusieurs selon config)
+    for _ in range(min(MAX_SAMPLES_PER_ARTICLE, len(paragraphs))):
+        
+        # On choisit un paragraphe au hasard à retirer
+        idx = random.randint(0, len(paragraphs) - 1)
+        
+        # Le paragraphe qu'on va retirer
+        removed = paragraphs[idx]
+        
+        # L'article sans ce paragraphe
+        truncated = paragraphs[:idx] + paragraphs[idx + 1:]
+        
+        # On crée l'exemple
+        example = {
+            "source": "wikipedia",               # Source des données
+            "title": title,                      # Titre de l'article
+            "article_truncated": truncated,      # Article sans le paragraphe
+            "paragraph_to_insert": removed,      # Paragraphe à insérer
+            "true_position": idx                 # Position correcte (0-based)
+        }
+        
+        examples.append(example)
+    
+    return examples
+
+
+def process_wiki_dump():
+    """Traitement principal"""
+    
+    # On récupère tous les fichiers d'articles Wikipédia
+    all_files = []
+    
+    for root, _, files in os.walk(INPUT_DIR):
+        for file in files:
+            all_files.append(os.path.join(root, file))
+    
+    print(len(all_files), "fichiers trouvés")
+    
+    # On mélange pour avoir des articles variés
+    random.shuffle(all_files)
+    
+    article_count = 0  # Compteur d'articles traités
+    
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as out:
+        
+        # On parcourt tous les fichiers
+        for file_path in tqdm(all_files):
+            
+            # On s'arrête quand on a assez d'articles
+            if article_count >= MAX_ARTICLES:
+                break
+            
+            # On ouvre le fichier
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                
+                # Chaque ligne est un article au format JSON
+                for line in f:
+                    
+                    if article_count >= MAX_ARTICLES:
+                        break
+                    
+                    line = line.strip()
+                    if not line:
+                        continue
+                    
+                    try:
+                        article = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    
+                    # On génère les exemples pour cet article
+                    examples = generate_examples_from_text(
+                        article.get("title", ""),
+                        article.get("text", "")
+                    )
+                    
+                    # Si l'article a donné des exemples, on le compte
+                    if examples:
+                        article_count += 1
+                    
+                    # On écrit les exemples dans le fichier de sortie
+                    for ex in examples:
+                        out.write(json.dumps(ex, ensure_ascii=False) + "\n")
+    
+    print("Articles utilisés :", article_count)
+
+
+if __name__ == "__main__":
+    process_wiki_dump()</code></pre>
+        </div>
+    </details>
+    
+    <!-- Script 5 : Génération dataset arXiv -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">generate_arxiv.py</span>
+            <span class="script-badge">arXiv</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Générer des exemples d'insertion à partir des articles arXiv</p>
+            <pre><code class="language-python">import os
+import json
+import random
+
+# Configuration
+INPUT_DIR = "arxiv_texts"          # Dossier avec les fichiers .txt extraits
+OUTPUT_FILE = "arxiv_dataset.jsonl" # Fichier de sortie
+
+MIN_PARAGRAPHS = 5                  # Minimum de paragraphes par article
+MAX_SAMPLES_PER_ARTICLE = 1         # Nombre d'exemples par article
+
+
+def clean_paragraphs(text):
+    """Nettoie le texte en paragraphes valides"""
+    
+    # On découpe par sauts de ligne
+    paragraphs = text.split("\n")
+    
+    # On nettoie et on filtre
+    paragraphs = [
+        p.strip()
+        for p in paragraphs
+        if len(p.strip()) > 80  # On garde les paragraphes suffisamment longs
+    ]
+    
+    return paragraphs
+
+
+def generate_examples_from_text(title, text):
+    """
+    Génère des exemples d'insertion à partir d'un article
+    Principe : on retire un paragraphe au hasard, et on garde l'article sans ce paragraphe
+    """
+    
+    # On nettoie le texte
+    paragraphs = clean_paragraphs(text)
+    
+    # Si l'article n'a pas assez de paragraphes, on l'ignore
+    if len(paragraphs) < MIN_PARAGRAPHS:
+        return []
+    
+    examples = []
+    
+    # On génère un exemple par article (ou plus selon config)
+    for _ in range(min(MAX_SAMPLES_PER_ARTICLE, len(paragraphs))):
+        
+        # On choisit un paragraphe au hasard
+        idx = random.randint(0, len(paragraphs) - 1)
+        
+        # Le paragraphe qu'on va retirer
+        removed = paragraphs[idx]
+        
+        # L'article sans ce paragraphe
+        truncated = paragraphs[:idx] + paragraphs[idx + 1:]
+        
+        # Construction de l'exemple
+        example = {
+            "source": "arxiv",                  # Source des données
+            "title": title,                     # Titre de l'article
+            "article_truncated": truncated,     # Article modifié
+            "paragraph_to_insert": removed,     # Paragraphe retiré
+            "true_position": idx                # Position originale
+        }
+        
+        examples.append(example)
+    
+    return examples
+
+
+# On récupère tous les fichiers .txt
+all_files = [f for f in os.listdir(INPUT_DIR) if f.endswith(".txt")]
+
+print(len(all_files), "fichiers trouvés")
+
+# On mélange pour avoir une bonne diversité
+random.shuffle(all_files)
+
+article_count = 0  # Compteur
+
+with open(OUTPUT_FILE, "w", encoding="utf8") as out:
+    
+    # On parcourt chaque fichier
+    for file in all_files:
+        
+        # On s'arrête quand on a assez d'articles
+        if article_count >= MAX_ARTICLES:
+            break
+        
+        path = os.path.join(INPUT_DIR, file)
+        
+        # Lecture du texte de l'article
+        with open(path, encoding="utf8", errors="ignore") as f:
+            text = f.read()
+        
+        # Le titre est le nom du fichier sans l'extension
+        title = file.replace(".txt", "")
+        
+        # Génération des exemples
+        examples = generate_examples_from_text(title, text)
+        
+        # Si l'article a donné des exemples, on le compte
+        if examples:
+            article_count += 1
+        
+        # Écriture dans le fichier de sortie
+        for ex in examples:
+            out.write(json.dumps(ex, ensure_ascii=False) + "\n")
+
+print("Articles utilisés :", article_count)</code></pre>
+        </div>
+    </details>
+    
+    <!-- Script 6 : Génération dataset PMC -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">generate_pmc.py</span>
+            <span class="script-badge">PMC</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Générer des exemples d'insertion à partir des articles PMC</p>
+            <pre><code class="language-python">import os
+import json
+import random
+import xml.etree.ElementTree as ET
+
+# Configuration
+INPUT_DIR = "pmc_xml"                # Dossier avec les fichiers XML de PMC
+OUTPUT_FILE = "pmc_dataset.jsonl"    # Fichier de sortie
+
+MIN_PARAGRAPHS = 5                   # Minimum de paragraphes par article
+MAX_SAMPLES_PER_ARTICLE = 1          # Nombre d'exemples par article
+
+
+def extract_paragraphs(xml_path):
+    """
+    Extrait les paragraphes d'un fichier XML PMC
+    Les paragraphes sont dans les balises &lt;p&gt;
+    """
+    
+    # On parse le fichier XML
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    
+    paragraphs = []
+    
+    # On cherche toutes les balises &lt;p&gt; (paragraphe)
+    for p in root.findall(".//p"):
+        # On récupère le texte complet de la balise
+        txt = "".join(p.itertext()).strip()
+        
+        # On garde les paragraphes suffisamment longs
+        if len(txt) > 80:
+            paragraphs.append(txt)
+    
+    return paragraphs
+
+
+# On récupère tous les fichiers XML
+all_files = [f for f in os.listdir(INPUT_DIR) if f.endswith(".xml")]
+
+print(len(all_files), "fichiers trouvés")
+
+# On mélange pour avoir des articles variés
+random.shuffle(all_files)
+
+article_count = 0
+
+with open(OUTPUT_FILE, "w", encoding="utf8") as out:
+    
+    # On parcourt chaque fichier
+    for file in all_files:
+        
+        # On s'arrête quand on a assez d'articles
+        if article_count >= MAX_ARTICLES:
+            break
+        
+        path = os.path.join(INPUT_DIR, file)
+        
+        try:
+            # Extraction des paragraphes
+            paragraphs = extract_paragraphs(path)
+        except Exception as e:
+            print(f"Erreur avec {file}: {e}")
+            continue
+        
+        # On ignore les articles trop courts
+        if len(paragraphs) < MIN_PARAGRAPHS:
+            continue
+        
+        # Le titre est le nom du fichier sans extension
+        title = file.replace(".xml", "")
+        
+        examples = []
+        
+        # Génération des exemples
+        for _ in range(min(MAX_SAMPLES_PER_ARTICLE, len(paragraphs))):
+            
+            # On choisit un paragraphe au hasard
+            idx = random.randint(0, len(paragraphs) - 1)
+            
+            # Le paragraphe qu'on retire
+            removed = paragraphs[idx]
+            
+            # L'article sans ce paragraphe
+            truncated = paragraphs[:idx] + paragraphs[idx + 1:]
+            
+            # Construction de l'exemple
+            example = {
+                "source": "pmc",                     # Source
+                "title": title,                      # Titre
+                "article_truncated": truncated,      # Article modifié
+                "paragraph_to_insert": removed,      # Paragraphe à insérer
+                "true_position": idx                 # Position originale
+            }
+            
+            examples.append(example)
+        
+        # Si l'article a donné des exemples, on le compte
+        if examples:
+            article_count += 1
+        
+        # Écriture dans le fichier de sortie
+        for ex in examples:
+            out.write(json.dumps(ex, ensure_ascii=False) + "\n")
+
+print("Articles utilisés :", article_count)</code></pre>
+        </div>
+    </details>
+</div>
+
+<div class="content-section">
+    <h2> Scripts de traitement</h2>
+    
+    <!-- Script 7 : Shuffle dataset -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">shuffle_dataset.py</span>
+            <span class="script-badge">Traitement</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Mélanger aléatoirement les exemples du dataset</p>
+            <pre><code class="language-python">import json
+import random
+
+# Fichier d'entrée (dataset fusionné) et fichier de sortie
+INPUT_FILE = "dataset_total.jsonl"
+OUTPUT_FILE = "dataset_shuffled.jsonl"
+
+# ==========================================
+# Pourquoi mélanger ?
+# ==========================================
+# Le mélange aléatoire (shuffling) est crucial pour l'apprentissage :
+# - Évite que le modèle apprenne des patterns liés à l'ordre des données
+# - Évite les biais liés à la source (Wikipédia, arXiv, PMC)
+# - Permet une meilleure généralisation du modèle
+
+data = []
+
+# Lecture du dataset
+with open(INPUT_FILE, encoding="utf8") as f:
+    for line in f:
+        data.append(json.loads(line))
+
+print("Nombre d'exemples :", len(data))
+
+# Mélange aléatoire des exemples
+random.shuffle(data)
+
+# Écriture du dataset mélangé
+with open(OUTPUT_FILE, "w", encoding="utf8") as f:
+    for example in data:
+        f.write(json.dumps(example, ensure_ascii=False) + "\n")
+
+print("Dataset mélangé sauvegardé dans :", OUTPUT_FILE)</code></pre>
+        </div>
+    </details>
+    
+    <!-- Script 8 : Split dataset -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">split_dataset.py</span>
+            <span class="script-badge">Traitement</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Diviser le dataset en train/dev/test</p>
+            <pre><code class="language-python">import json
+import random
+
+# Fichier d'entrée
+INPUT_FILE = "dataset_shuffled.jsonl"
+
+# Fichiers de sortie
+TRAIN_FILE = "train.jsonl"
+DEV_FILE = "dev.jsonl"
+TEST_FILE = "test.jsonl"
+
+# Lecture du dataset
+with open(INPUT_FILE, encoding="utf8") as f:
+    data = [json.loads(line) for line in f]
+
+# On mélange à nouveau pour garantir un split aléatoire
+random.shuffle(data)
+
+n = len(data)
+print("Total d'exemples :", n)
+
+# Répartition : 80% train, 10% dev, 10% test
+train = data[: int(0.8 * n)]
+dev = data[int(0.8 * n): int(0.9 * n)]
+test = data[int(0.9 * n):]
+
+# Sauvegarde des trois fichiers
+for name, dataset in [
+    (TRAIN_FILE, train),
+    (DEV_FILE, dev),
+    (TEST_FILE, test)
+]:
+    with open(name, "w", encoding="utf8") as f:
+        for ex in dataset:
+            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+
+print("Train:", len(train))
+print("Dev:", len(dev))
+print("Test:", len(test))</code></pre>
+        </div>
+    </details>
+    
+    <!-- Script 9 : Build pairs -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">build_pairs.py</span>
+            <span class="script-badge">Traitement</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Transformer les articles en paires (prev, insert, next) pour l'entraînement</p>
+            <pre><code class="language-python">import json
+import argparse
+
+def convert_dataset(input_file, output_file):
+    """
+    Transforme un dataset d'articles en paires d'insertion
+    
+    Pour chaque article, on génère des paires (prev, next, insert, label)
+    où :
+    - prev = paragraphe avant l'insertion
+    - next = paragraphe après l'insertion
+    - insert = paragraphe à insérer
+    - label = 1 si c'est la bonne position, 0 sinon
+    """
+    
+    # On ouvre le fichier d'entrée (dataset brut)
+    # et le fichier de sortie où on va écrire les paires
+    with open(input_file, encoding="utf8") as f, open(output_file, "w", encoding="utf8") as out:
+        
+        # On lit le fichier ligne par ligne (format JSONL)
+        for line in f:
+            
+            # On convertit la ligne JSON en dictionnaire Python
+            ex = json.loads(line)
+            
+            # On récupère les éléments utiles
+            article = ex["article_truncated"]       # liste des paragraphes
+            insert = ex["paragraph_to_insert"]      # paragraphe à insérer
+            gold = ex["true_position"]              # position correcte
+            
+            # Si l'article est trop court, on ne peut pas créer de paires
+            if len(article) < 2:
+                continue
+            
+            # On parcourt toutes les positions possibles dans l'article
+            for i in range(len(article) - 1):
+                
+                # On récupère le paragraphe avant et après
+                prev_p = article[i]
+                next_p = article[i + 1]
+                
+                # Label = 1 si c'est la bonne position
+                # Attention : gold correspond à la position dans l'article original
+                # On compare avec i+1 car les positions sont décalées
+                label = 1 if i == gold - 1 else 0
+                
+                # On construit la paire pour le modèle
+                pair = {
+                    "prev": prev_p,
+                    "next": next_p,
+                    "insert": insert,
+                    "label": label
+                }
+                
+                # On écrit la paire dans le fichier de sortie (format JSONL)
+                out.write(json.dumps(pair, ensure_ascii=False) + "\n")
+
+
+if __name__ == "__main__":
+    
+    # On utilise argparse pour pouvoir lancer le script en ligne de commande
+    parser = argparse.ArgumentParser()
+    
+    # Argument : chemin du fichier d'entrée
+    parser.add_argument("--input")
+    
+    # Argument : chemin du fichier de sortie
+    parser.add_argument("--output")
+    
+    # On récupère les arguments donnés par l'utilisateur
+    args = parser.parse_args()
+    
+    # On lance la conversion du dataset
+    convert_dataset(args.input, args.output)</code></pre>
+            <p><strong>Exécution :</strong></p>
+            <pre><code class="language-bash">python build_pairs.py --input train.jsonl --output train_pairs.jsonl
+python build_pairs.py --input dev.jsonl --output dev_pairs.jsonl
+python build_pairs.py --input test.jsonl --output test_pairs.jsonl</code></pre>
+        </div>
+    </details>
+</div>
+
+<div class="content-section">
+    <h2> Rétrécissement du dataset</h2>
+    <p>Face aux contraintes de mémoire GPU et pour accélérer les phases d'expérimentation, nous avons dû réduire la taille de notre dataset tout en préservant son équilibre entre les classes. Cette étape, appelée <strong>sous-échantillonnage (downsampling)</strong>, nous permet de travailler avec un jeu de données plus petit mais toujours représentatif.</p>
+    
+    <p>Nous avons utilisé la méthode du <strong>réservoir sampling (échantillonnage par réservoir)</strong> qui garantit un tirage aléatoire uniforme même sur des fichiers trop volumineux pour être chargés entièrement en mémoire.</p>
+    
+    <p>L'objectif était de créer des versions réduites de nos datasets :</p>
+    <ul>
+        <li><strong>Train :</strong> 20 000 exemples par classe (40 000 au total)</li>
+        <li><strong>Dev (validation) :</strong> 2 000 exemples par classe (4 000 au total)</li>
+        <li><strong>Test :</strong> 5 000 exemples par classe (10 000 au total)</li>
+    </ul>
+    
+    <p>Cette réduction nous a permis de :</p>
+    <ul>
+        <li>Réduire drastiquement le temps d'entraînement (de plusieurs heures à 1 seule heure)</li>
+        <li>Adapter la consommation mémoire aux limitations de nos GPUs </li>
+    </ul>
+    
+    <!-- Script : Réservoir sampling -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">reservoir_sampling.py</span>
+            <span class="script-badge">Traitement</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Réduire la taille du dataset tout en préservant l'équilibre entre les classes (label 0 et label 1).</p>
+            
+            <pre><code class="language-python">import json
+import random
+from pathlib import Path
+
+def reservoir_sample_by_label(input_path, output_path, target_counts, seed=42):
+    """
+    Échantillonne un dataset JSONL en préservant un nombre cible d'exemples par label.
+    
+    Args:
+        input_path: chemin du fichier d'entrée
+        output_path: chemin du fichier de sortie
+        target_counts: dictionnaire {label: nombre_cible}
+        seed: graine aléatoire pour la reproductibilité
+    """
+    
+    # On fixe la graine aléatoire pour la reproductibilité
+    random.seed(seed)
+
+    # Création des réservoirs pour chaque label
+    reservoirs = {label: [] for label in target_counts}
+    seen_counts = {label: 0 for label in target_counts}
+
+    print(f"Lecture du fichier: {input_path}")
+    
+    with open(input_path, "r", encoding="utf-8") as f:
+        for line in f:
+            obj = json.loads(line)
+            label = obj["label"]
+
+            # On ignore les labels non ciblés
+            if label not in target_counts:
+                continue
+
+            seen_counts[label] += 1
+            k = target_counts[label]
+
+            # Algorithme du réservoir sampling
+            if len(reservoirs[label]) < k:
+                # Réservoir pas encore plein → on ajoute directement
+                reservoirs[label].append(line)
+            else:
+                # Réservoir plein → remplacement aléatoire avec probabilité k/n
+                j = random.randint(1, seen_counts[label])
+                if j <= k:
+                    reservoirs[label][j - 1] = line
+
+    # Vérification que tous les réservoirs sont remplis
+    for label, target in target_counts.items():
+        actual = len(reservoirs[label])
+        if actual < target:
+            print(f" Attention: label {label} n'a que {actual} exemples (objectif: {target})")
+
+    # Mélange des exemples de tous les labels
+    all_lines = []
+    for label in target_counts:
+        all_lines.extend(reservoirs[label])
+    random.shuffle(all_lines)
+
+    # Création du dossier de sortie si nécessaire
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Écriture du fichier de sortie
+    with open(output_path, "w", encoding="utf-8") as f:
+        for line in all_lines:
+            f.write(line)
+
+    print(f" Dataset sauvegardé: {output_path}")
+    print("   Répartition finale :")
+    for label in target_counts:
+        print(f"     label {label}: {len(reservoirs[label])} exemples")
+
+
+if __name__ == "__main__":
+    # Chemins des fichiers originaux
+    TRAIN_IN = "dataset/train_pairs.jsonl"
+    DEV_IN = "dataset/dev_pairs.jsonl"
+    TEST_IN = "dataset/test_pairs.jsonl"
+
+    # Chemins des fichiers réduits
+    TRAIN_OUT = "dataset_small/train_small_balanced.jsonl"
+    DEV_OUT = "dataset_small/dev_small_balanced.jsonl"
+    TEST_OUT = "dataset_small/test_small_balanced.jsonl"
+
+    print("=" * 60)
+    print(" RÉTRÉCISSEMENT DES DATASETS")
+    print("=" * 60)
+    
+    # Sous-échantillonnage du train : 20k par classe
+    reservoir_sample_by_label(
+        TRAIN_IN,
+        TRAIN_OUT,
+        target_counts={0: 20000, 1: 20000},
+        seed=42
+    )
+
+    # Sous-échantillonnage du dev : 2k par classe
+    reservoir_sample_by_label(
+        DEV_IN,
+        DEV_OUT,
+        target_counts={0: 2000, 1: 2000},
+        seed=42
+    )
+
+    # Sous-échantillonnage du test : 5k par classe
+    reservoir_sample_by_label(
+        TEST_IN,
+        TEST_OUT,
+        target_counts={0: 5000, 1: 5000},
+        seed=42
+    )
+    
+    print(" Tous les datasets ont été réduits avec succès!")</code></pre>
+            
+            <h3> Résultat du rétrécissement</h3>
+            
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th>Dataset</th>
+                        <th>Label 0 (original)</th>
+                        <th>Label 1 (original)</th>
+                        <th>Label 0 (réduit)</th>
+                        <th>Label 1 (réduit)</th>
+                        <th>Total réduit</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Train</strong></td>
+                        <td>~5.6M</td>
+                        <td>~5.6M</td>
+                        <td>20 000</td>
+                        <td>20 000</td>
+                        <td>40 000</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Dev</strong></td>
+                        <td>~700k</td>
+                        <td>~700k</td>
+                        <td>2 000</td>
+                        <td>2 000</td>
+                        <td>4 000</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Test</strong></td>
+                        <td>~700k</td>
+                        <td>~700k</td>
+                        <td>5 000</td>
+                        <td>5 000</td>
+                        <td>10 000</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <div class="note">
+                <strong> Pourquoi l'échantillonnage par réservoir ?</strong><br>
+                Cette méthode présente plusieurs avantages :<br>
+                - <strong>Économie de mémoire</strong> : on ne charge jamais tout le dataset en mémoire<br>
+                - <strong>Échantillon aléatoire uniforme</strong> : chaque ligne a la même probabilité d'être sélectionnée<br>
+                - <strong>Reproductibilité</strong> : la graine aléatoire (seed=42) garantit des résultats identiques à chaque exécution<br>
+                - <strong>Équilibre préservé</strong> : on conserve exactement le nombre d'exemples souhaité par classe
+            </div>
+        </div>
+    </details>
+</div>
+
+<div class="content-section">
+    <h2> Scripts d'entraînement et d'évaluation</h2>
+    
+        <!-- Script 10 : XLM-RoBERTa -->
+        <details class="script-details">
+            <summary>
+                <span class="script-icon"></span>
+                <span class="script-title">XLM-RoBERTa</span>
+                <span class="script-badge">Entraînement</span>
+            </summary>
+            <div class="script-content">
+                <p><strong>Objectif :</strong> Entraîner le modèle XLM-RoBERTa (modèle multilingue performant) sur notre tâche d'insertion de paragraphe.</p>
+                <p>XLM-RoBERTa est un modèle multilingue pré-entraîné sur 100 langues, ce qui le rend particulièrement adapté pour traiter des textes en français comme en anglais. Contrairement à l'approche de ranking utilisée pour BERT Multilingual, ici nous abordons le problème comme une <strong>classification binaire classique</strong> : pour chaque position possible, le modèle doit prédire si c'est la bonne position (label 1) ou non (label 0).</p>
+                <p>Le script commence par charger les données au format JSONL, où chaque exemple contient les champs <code>prev</code>, <code>insert</code>, <code>next</code> et <code>label</code>. La fonction <code>preprocess()</code> prépare chaque exemple en concaténant les trois paragraphes sous la forme <code>insert [SEP] prev [SEP] next</code> (l'ordre est différent de l'approche ranking pour mieux correspondre à l'architecture du modèle). La tokenisation utilise <code>longest_first</code> pour gérer les séquences de longueur variable.</p>
+                <p>Le modèle XLM-RoBERTa est configuré avec <code>num_labels=2</code> pour effectuer une classification binaire. L'entraînement utilise le <code>Trainer</code> de Hugging Face, qui gère automatiquement la boucle d'entraînement, l'évaluation et la sauvegarde des checkpoints. Les métriques calculées sont l'accuracy, le F1-score, la précision et le rappel.</p>
+                <p>Les hyperparamètres sont les suivants : batch size de 16, learning rate de 2e-5, 4 epochs, warmup ratio de 0.1, et une évaluation à chaque epoch. Le modèle sauvegarde automatiquement le meilleur checkpoint en fonction de la loss de validation.</p>
+                <p>À la fin de l'entraînement, le script évalue le modèle sur les datasets de validation et de test, puis sauvegarde le modèle final dans <code>my_xlm_roberta_model</code>. Une fonction <code>predict()</code> est également fournie pour faire des prédictions sur de nouveaux exemples.</p>
+                
+                <pre><code class="language-python"># ==========================================
+# XLM-ROBERTA - ENTRAÎNEMENT CLASSIFICATION
+# ==========================================
+
+# Imports
+import json
+import torch
+from datasets import Dataset
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    Trainer,
+    TrainingArguments
+)
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+
+# ==========================================
+# CHARGEMENT DES DONNÉES
+# ==========================================
+
+def load_jsonl(path):
+    \"\"\"Charge un fichier JSONL et retourne une liste de dictionnaires\"\"\"
+    data = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                data.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return data
+
+# Chargement des datasets
+train_data = load_jsonl("dataset_small/train_small_balanced.jsonl")
+dev_data   = load_jsonl("dataset_small/dev_small_balanced.jsonl")
+test_data  = load_jsonl("dataset_small/test_small_balanced.jsonl")
+
+# Conversion en Dataset Hugging Face
+train_dataset = Dataset.from_list(train_data)
+dev_dataset   = Dataset.from_list(dev_data)
+test_dataset  = Dataset.from_list(test_data)
+
+# ==========================================
+# TOKENIZER ET MODÈLE
+# ==========================================
+
+model_name = "xlm-roberta-base"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+# ==========================================
+# PRÉTRAITEMENT
+# ==========================================
+
+def preprocess(example):
+    \"\"\"
+    Tokenise un exemple pour XLM-RoBERTa
+    Format: insert [SEP] prev [SEP] next
+    \"\"\"
+    prev_text = str(example.get("prev", ""))
+    insert_text = str(example.get("insert", ""))
+    next_text = str(example.get("next", ""))
+    
+    # Le texte principal est le paragraphe à insérer
+    text_primary = insert_text
+    # Le texte secondaire est le contexte (avant et après)
+    text_secondary = prev_text + f" {tokenizer.sep_token} " + next_text
+
+    # Tokenisation avec truncation longest_first
+    tokenized = tokenizer(
+        text=text_primary,
+        text_pair=text_secondary,
+        truncation="longest_first",
+        padding="max_length",
+        max_length=256
+    )
+
+    tokenized["label"] = int(example["label"])
+    return tokenized
+
+# Application du prétraitement
+train_dataset = train_dataset.map(preprocess, batched=False)
+dev_dataset   = dev_dataset.map(preprocess, batched=False)
+test_dataset  = test_dataset.map(preprocess, batched=False)
+
+# Conversion en format PyTorch
+train_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
+dev_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
+test_dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "label"])
+
+# ==========================================
+# CHARGEMENT DU MODÈLE
+# ==========================================
+
+model = AutoModelForSequenceClassification.from_pretrained(
+    model_name,
+    num_labels=2  # Classification binaire
+)
+
+# ==========================================
+# MÉTRIQUES D'ÉVALUATION
+# ==========================================
+
+def compute_metrics(pred):
+    \"\"\"Calcule les métriques d'évaluation\"\"\"
+    labels = pred.label_ids
+    preds  = pred.predictions.argmax(-1)
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, preds, average="binary", zero_division=0
+    )
+    acc = accuracy_score(labels, preds)
+    return {
+        "accuracy": acc,
+        "f1": f1,
+        "precision": precision,
+        "recall": recall
+    }
+
+# ==========================================
+# CONFIGURATION DE L'ENTRAÎNEMENT
+# ==========================================
+
+training_args = TrainingArguments(
+    output_dir="./results",
+    learning_rate=2e-5,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=32,
+    num_train_epochs=4,
+    weight_decay=0.01,
+    warmup_ratio=0.1,
+    eval_strategy="epoch",
+    save_strategy="epoch",
+    load_best_model_at_end=True,
+    logging_dir="./logs"
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=dev_dataset,
+    compute_metrics=compute_metrics
+)
+
+# ==========================================
+# LANCEMENT DE L'ENTRAÎNEMENT
+# ==========================================
+
+print("Début de l'entraînement avec XLM-RoBERTa...")
+trainer.train()
+
+# ==========================================
+# ÉVALUATION
+# ==========================================
+
+print("\n--- Évaluation sur le dataset de validation ---")
+dev_metrics = trainer.evaluate(dev_dataset)
+print(dev_metrics)
+
+print("\n--- Évaluation sur le dataset de test ---")
+test_metrics = trainer.evaluate(test_dataset)
+print(test_metrics)
+
+# ==========================================
+# FONCTION DE PRÉDICTION
+# ==========================================
+
+def predict(prev, insert, next_text):
+    \"\"\"
+    Prédit la probabilité que la position soit correcte
+    Retourne un score entre 0 et 1
+    \"\"\"
+    text_primary = str(insert)
+    text_secondary = str(prev) + f" {tokenizer.sep_token} " + str(next_text)
+
+    inputs = tokenizer(
+        text=text_primary,
+        text_pair=text_secondary,
+        return_tensors="pt",
+        truncation="longest_first",
+        max_length=256
+    )
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    probs = torch.softmax(outputs.logits, dim=1)
+    return probs[0][1].item()  # Probabilité de la classe 1 (bonne position)
+
+# ==========================================
+# SAUVEGARDE DU MODÈLE
+# ==========================================
+
+trainer.save_model("my_xlm_roberta_model")
+tokenizer.save_pretrained("my_xlm_roberta_model")
+print("Modèle sauvegardé dans my_xlm_roberta_model")</code></pre>
+    
+                <h3> Résultats d'entraînement</h3>
+                
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>Epoch</th>
+                            <th>Training Loss</th>
+                            <th>Validation Loss</th>
+                            <th>Accuracy</th>
+                            <th>F1</th>
+                            <th>Precision</th>
+                            <th>Recall</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1</td>
+                            <td>0.6834</td>
+                            <td>0.5514</td>
+                            <td>71.85%</td>
+                            <td>72.24%</td>
+                            <td>71.25%</td>
+                            <td>73.25%</td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td>0.5240</td>
+                            <td>0.5596</td>
+                            <td>73.08%</td>
+                            <td>75.78%</td>
+                            <td>68.86%</td>
+                            <td>84.25%</td>
+                        </tr>
+                        <tr>
+                            <td>3</td>
+                            <td>0.4666</td>
+                            <td>0.5404</td>
+                            <td>74.28%</td>
+                            <td>76.04%</td>
+                            <td>71.15%</td>
+                            <td>81.65%</td>
+                        </tr>
+                        <tr>
+                            <td>4</td>
+                            <td>0.3924</td>
+                            <td>0.5731</td>
+                            <td>74.38%</td>
+                            <td>75.06%</td>
+                            <td>73.20%</td>
+                            <td>76.90%</td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                <h3> Résultats finaux sur le dataset de test</h3>
+                <ul>
+                    <li><strong>Accuracy :</strong> 74.41%</li>
+                    <li><strong>F1-score :</strong> 76.29%</li>
+                    <li><strong>Précision :</strong> 71.06%</li>
+                    <li><strong>Rappel :</strong> 82.36%</li>
+                </ul>
+                
+                <div class="note">
+                    <strong> Analyse des résultats :</strong><br>
+                    Le modèle XLM-RoBERTa atteint une accuracy de 74.4% sur le dataset de test, avec un excellent rappel de 82.4% (il identifie bien les positions correctes). La précision est un peu plus faible (71.1%), ce qui indique qu'il y a quelques faux positifs. Le F1-score de 76.3% montre un bon équilibre entre précision et rappel. Ces résultats sont  supérieurs à ceux obtenus avec l'approche de ranking sur BERT Multilingual, c'est pourquoi nous avons choisi de garder ce model qui est le meilleur parmis les modèles multilingues tester.
+                </div>
+            </div>
+        </details>
+    
+    <div class="content-section">
+        <h2> Scripts d'entraînement et d'evaluation des autres modèles testés</h2>
+        
+    <!-- Script 11 : Train ranking -->
+    <details class="script-details">
+        <summary>
+            <span class="script-icon"></span>
+            <span class="script-title">BertMultilingual</span>
+            <span class="script-badge">Entraînement</span>
+        </summary>
+        <div class="script-content">
+            <p><strong>Objectif :</strong> Entraîner le modèle BERT Multilingual sur la tâche de ranking</p>
+            <p> Le script <code>train_ranking.py</code> met en place un entraînement basé sur une approche de ranking pour apprendre à insérer correctement un paragraphe dans un article. Il commence par charger un fichier de données au format JSONL contenant des exemples déjà construits, où chaque ligne correspond à un triplet de paragraphes (<code>prev</code>, <code>insert</code>, <code>next</code>) ainsi qu’un label indiquant si la position est correcte ou non. Ces exemples sont ensuite séparés en deux groupes : les exemples positifs (où le paragraphe est bien placé) et les exemples négatifs (où il ne l’est pas). L’idée est de créer des paires composées d’un exemple positif et d’un exemple négatif, afin que le modèle apprenne à comparer les deux. </p> <p> Pour chaque paire, le script prépare les entrées du modèle en concaténant les trois paragraphes sous la forme <code>prev [SEP] insert [SEP] next</code>, en utilisant le tokenizer associé au modèle <code>bert-base-multilingual-cased</code>. Cette étape transforme le texte en séquences de tokens numériques que BERT peut traiter. Le modèle est ensuite configuré pour produire un score unique (et non une classe), qui représente à quel point la position proposée est pertinente. Ainsi, chaque exemple (positif ou négatif) reçoit un score. </p> <p> Pendant l’entraînement, pour chaque paire (positif, négatif), le script calcule une <em>margin ranking loss</em>. Le principe est simple : on veut que le score de l’exemple positif soit supérieur à celui de l’exemple négatif d’au moins une certaine marge. Si ce n’est pas le cas, une pénalité est appliquée, ce qui pousse le modèle à corriger ses prédictions. Ce mécanisme force le modèle à apprendre à distinguer les bonnes positions des mauvaises en les comparant directement, plutôt que de prendre des décisions isolées. </p> <p> Enfin, à la fin de chaque epoch, une phase d’évaluation est réalisée. Pour chaque paire, on vérifie si le score attribué à l’exemple positif est bien supérieur à celui de l’exemple négatif. Si c’est le cas, la prédiction est considérée comme correcte. On calcule alors une <em>accuracy de ranking</em>, qui mesure la proportion de comparaisons correctement effectuées. Cette métrique est plus adaptée que l’accuracy classique, car elle reflète directement la capacité du modèle à choisir la meilleure position parmi plusieurs possibilités. Ainsi, tout le script est organisé autour de cette idée centrale : apprendre à classer des positions entre elles plutôt qu’à les juger indépendamment. </p>
+            <pre><code class="language-python"># train_ranking.py
+import json
+import torch
+import random
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from torch.optim import AdamW
+from tqdm import tqdm
+import os
+
+MODEL_NAME = "bert-base-multilingual-cased"  # Modèle multilingue
+TRAIN_FILE = "dataset_prêt_utilisation/train_pairs.jsonl"
+DEV_FILE = "dataset_prêt_utilisation/dev_pairs.jsonl"
+
+BATCH_SIZE = 16      # Nombre d'exemples par batch
+EPOCHS = 3           # Nombre de passages sur le dataset
+LR = 2e-5            # Learning rate (vitesse d'apprentissage)
+MAX_LEN = 512        # Longueur max des séquences
+
+SAVE_PATH = "model_ranking"  # Dossier où sauvegarder le modèle
+
+
+class RankingDataset(Dataset):
+    """
+    Dataset pour l'apprentissage par ranking
+    Chaque exemple est une paire (exemple positif, exemple négatif)
+    """
+    
+    def __init__(self, file, tokenizer):
+        self.tokenizer = tokenizer
+        self.pos_examples = []  # Exemples où label = 1 (bonne position)
+        self.neg_examples = []  # Exemples où label = 0 (mauvaise position)
+
+        print(f"Chargement: {file}")
+
+        # On charge le fichier
+        with open(file, "r", encoding="utf-8") as f:
+            for line in f:
+                ex = json.loads(line)
+                if ex["label"] == 1:
+                    self.pos_examples.append(ex)
+                else:
+                    self.neg_examples.append(ex)
+
+        print(f"Positifs: {len(self.pos_examples)} | Négatifs: {len(self.neg_examples)}")
+
+    def __len__(self):
+        # Le dataset a la taille du nombre d'exemples positifs
+        return len(self.pos_examples)
+
+    def encode(self, ex):
+        """Tokenise un exemple pour le modèle"""
+        
+        # On utilise [SEP] comme séparateur (token standard de BERT)
+        sep = self.tokenizer.sep_token or "[SEP]"
+        
+        # On reconstruit le texte comme pendant l'entraînement
+        text = f"{ex['prev']} {sep} {ex['insert']} {sep} {ex['next']}"
+        
+        # Tokenisation
+        return self.tokenizer(
+            text,
+            truncation=True,
+            padding="max_length",
+            max_length=MAX_LEN,
+            return_tensors="pt"
+        )
+
+    def __getitem__(self, idx):
+        """
+        Retourne un tuple (exemple positif, exemple négatif aléatoire)
+        """
+        # On prend un exemple positif
+        pos = self.pos_examples[idx]
+        
+        # On choisit un exemple négatif au hasard
+        neg = random.choice(self.neg_examples)
+        
+        # On encode les deux
+        pos_enc = self.encode(pos)
+        neg_enc = self.encode(neg)
+        
+        # On enlève la dimension batch (squeeze)
+        pos_item = {k: v.squeeze() for k, v in pos_enc.items()}
+        neg_item = {k: v.squeeze() for k, v in neg_enc.items()}
+        
+        return pos_item, neg_item
+
+
+def collate_fn(batch):
+    """
+    Fonction qui regroupe les exemples en batch
+    """
+    pos_batch = {}
+    neg_batch = {}
+    
+    # On empile les tensors pour le batch
+    for key in batch[0][0].keys():
+        pos_batch[key] = torch.stack([item[0][key] for item in batch])
+        neg_batch[key] = torch.stack([item[1][key] for item in batch])
+    
+    return pos_batch, neg_batch
+
+
+def evaluate(model, dataset, tokenizer, device, num_samples=200):
+    """
+    Évalue le modèle sur un échantillon du dataset
+    """
+    model.eval()
+    correct = 0
+    
+    # On teste sur num_samples exemples
+    for i in range(min(num_samples, len(dataset.pos_examples))):
+        
+        # On prend un exemple positif et un négatif aléatoire
+        pos = dataset.pos_examples[i]
+        neg = random.choice(dataset.neg_examples)
+        
+        # Fonction locale pour encoder
+        def encode(ex):
+            sep = tokenizer.sep_token or "[SEP]"
+            text = f"{ex['prev']} {sep} {ex['insert']} {sep} {ex['next']}"
+            return tokenizer(text, return_tensors="pt", truncation=True, 
+                           padding=True, max_length=MAX_LEN)
+        
+        pos_enc = encode(pos)
+        neg_enc = encode(neg)
+        
+        # Envoi sur le device (GPU/CPU)
+        pos_enc = {k: v.to(device) for k, v in pos_enc.items()}
+        neg_enc = {k: v.to(device) for k, v in neg_enc.items()}
+        
+        # Prédiction
+        with torch.no_grad():
+            pos_score = model(**pos_enc).logits.squeeze()
+            neg_score = model(**neg_enc).logits.squeeze()
+        
+        # Si le score du positif est plus élevé, c'est une bonne prédiction
+        if pos_score > neg_score:
+            correct += 1
+    
+    acc = correct / num_samples
+    print(f"Ranking accuracy: {acc:.4f}")
+    return acc
+
+
+def train():
+    """
+    Fonction principale d'entraînement
+    """
+    
+    # Détection du GPU si disponible
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+    
+    # Chargement du tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    
+    # Chargement du modèle avec num_labels=1 (sortie = un score)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        num_labels=1
+    ).to(device)
+    
+    # Chargement des datasets
+    train_dataset = RankingDataset(TRAIN_FILE, tokenizer)
+    dev_dataset = RankingDataset(DEV_FILE, tokenizer)
+    
+    # DataLoader pour le train
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        collate_fn=collate_fn
+    )
+    
+    # Optimiseur AdamW
+    optimizer = AdamW(model.parameters(), lr=LR)
+    
+    best_acc = 0
+    os.makedirs(SAVE_PATH, exist_ok=True)
+    
+    # Boucle d'entraînement
+    for epoch in range(EPOCHS):
+        print(f"\nEpoch {epoch+1}")
+        model.train()
+        
+        loop = tqdm(train_loader)
+        
+        for pos_batch, neg_batch in loop:
+            # Envoi sur le device
+            pos_batch = {k: v.to(device) for k, v in pos_batch.items()}
+            neg_batch = {k: v.to(device) for k, v in neg_batch.items()}
+            
+            # Scores des exemples positifs et négatifs
+            pos_score = model(**pos_batch).logits.squeeze()
+            neg_score = model(**neg_batch).logits.squeeze()
+            
+            # Loss = margin ranking loss
+            # On veut que pos_score > neg_score d'au moins margin
+            margin = 1.0
+            loss = torch.clamp(margin - pos_score + neg_score, min=0).mean()
+            
+            # Backpropagation
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            
+            # Affichage de la loss
+            loop.set_postfix(loss=loss.item())
+        
+        # Évaluation à la fin de l'epoch
+        acc = evaluate(model, dev_dataset, tokenizer, device)
+        
+        # Sauvegarde si meilleur modèle
+        if acc > best_acc:
+            best_acc = acc
+            model.save_pretrained(SAVE_PATH)
+            tokenizer.save_pretrained(SAVE_PATH)
+            print(" Nouveau meilleur modèle sauvegardé!")
+    
+    print("\n Entraînement terminé!")
+
+
+if __name__ == "__main__":
+    train()</code></pre>
+        </div>
+    </details>
+        <!-- Script 12 : CamemBERT -->
+        <details class="script-details">
+            <summary>
+                <span class="script-icon"></span>
+                <span class="script-title">CamemBERT</span>
+                <span class="script-badge">Entraînement</span>
+            </summary>
+            <div class="script-content">
+                <p><strong>Objectif :</strong> Entraîner le modèle CamemBERT (modèle français) sur notre tâche.</p>
+                
+                <pre><code class="language-python">import json
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from torch.optim import AdamW
+from tqdm import tqdm
+
+MODEL_NAME = "almanach/camembert-base"
+
+TRAIN_FILE = "dataset_petit/train_small_balanced.jsonl"
+DEV_FILE = "dataset_petit/dev_small_balanced.jsonl"
+
+BATCH_SIZE = 8    
+EPOCHS = 3       
+LR = 2e-5       
+MAX_LEN = 512
+
+
+class InsertDataset(Dataset):
+
+    def __init__(self, file, tokenizer):
+
+        self.examples = []
+
+        self.tokenizer = tokenizer
+
+        with open(file) as f:
+            for line in f:
+                self.examples.append(json.loads(line))
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+
+        ex = self.examples[idx]
+
+        sep = self.tokenizer.sep_token
+        text = (
+             ex["prev"]
+             + " " + sep + " "
+             + ex["insert"]
+             + " " + sep + " "
+             + ex["next"]
+        )
+
+        encoding = self.tokenizer(
+            text,
+            truncation=True,         
+            padding="max_length",   
+            max_length=MAX_LEN,
+            return_tensors="pt"    
+        )
+
+        item = {k: v.squeeze() for k, v in encoding.items()}
+        item["labels"] = torch.tensor(ex["label"])
+
+        return item
+
+
+def evaluate(model, dataloader, device):
+
+    model.eval()
+
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+
+        for batch in dataloader:
+
+            batch = {k: v.to(device) for k, v in batch.items()}
+
+            outputs = model(**batch)
+
+            preds = torch.argmax(outputs.logits, dim=1)
+
+            correct += (preds == batch["labels"]).sum().item()
+
+            total += batch["labels"].size(0)
+    
+    return correct / total
+
+
+def train():
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        num_labels=2
+    )
+
+    model.to(device)
+
+    train_dataset = InsertDataset(TRAIN_FILE, tokenizer)
+    dev_dataset = InsertDataset(DEV_FILE, tokenizer)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2, pin_memory=True)
+    dev_loader = DataLoader(dev_dataset, batch_size=BATCH_SIZE, num_workers=2, pin_memory=True)
+
+    optimizer = AdamW(model.parameters(), lr=LR)
+
+    best_acc = 0.0
+
+    SAVE_PATH = "/content/drive/MyDrive/Colab\\ Notebooks/model"
+
+    for epoch in range(EPOCHS):
+
+        model.train()
+
+        loop = tqdm(train_loader)
+
+        for batch in loop:
+
+            batch = {k: v.to(device) for k, v in batch.items()}
+
+            outputs = model(**batch)
+
+            loss = outputs.loss
+
+            loss.backward()
+
+            optimizer.step()
+
+            optimizer.zero_grad()
+
+            loop.set_description(f"Epoch {epoch}")
+            loop.set_postfix(loss=loss.item())
+
+        acc = evaluate(model, dev_loader, device)
+
+        print("Validation accuracy:", acc)
+
+        if acc > best_acc:
+            best_acc = acc
+            model.save_pretrained(SAVE_PATH)
+            tokenizer.save_pretrained(SAVE_PATH)
+            print(f"Best model saved with dev acc = {best_acc:.4f}")
+
+    model.save_pretrained(SAVE_PATH)
+
+    tokenizer.save_pretrained(SAVE_PATH)
+
+
+if __name__ == "__main__":
+    train()</code></pre>
+            </div>
+        </details>
+
+        <!-- Script 13 : FlauBERT -->
+        <details class="script-details">
+            <summary>
+                <span class="script-icon"></span>
+                <span class="script-title">FlauBERT</span>
+                <span class="script-badge">Entraînement</span>
+            </summary>
+            <div class="script-content">
+                <p><strong>Objectif :</strong> Entraîner le modèle FlauBERT (modèle français) sur notre tâche.</p>
+                
+                <pre><code class="language-python">import json
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from torch.optim import AdamW
+from tqdm import tqdm
+
+MODEL_NAME = "flaubert/flaubert_base_uncased"
+
+TRAIN_FILE = "dataset_petit/train_small_balanced.jsonl"
+DEV_FILE = "dataset_petit/dev_small_balanced.jsonl"
+
+BATCH_SIZE = 8
+EPOCHS = 3
+LR = 2e-5
+MAX_LEN = 512
+
+
+class InsertDataset(Dataset):
+    def __init__(self, file, tokenizer):
+        self.examples = []
+        self.tokenizer = tokenizer
+
+        with open(file, "r", encoding="utf-8") as f:
+            for line in f:
+                self.examples.append(json.loads(line))
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        ex = self.examples[idx]
+
+        sep = self.tokenizer.sep_token
+        text = (
+            ex["prev"]
+            + " " + sep + " "
+            + ex["insert"]
+            + " " + sep + " "
+            + ex["next"]
+        )
+
+        encoding = self.tokenizer(
+            text,
+            truncation=True,
+            padding="max_length",
+            max_length=MAX_LEN,
+            return_tensors="pt"
+        )
+
+        item = {k: v.squeeze(0) for k, v in encoding.items()}
+        item["labels"] = torch.tensor(ex["label"], dtype=torch.long)
+        return item
+
+
+def evaluate(model, dataloader, device):
+    model.eval()
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+            preds = torch.argmax(outputs.logits, dim=1)
+            correct += (preds == batch["labels"]).sum().item()
+            total += batch["labels"].size(0)
+
+    return correct / total
+
+
+def train():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        num_labels=2
+    )
+    model.to(device)
+
+    train_dataset = InsertDataset(TRAIN_FILE, tokenizer)
+    dev_dataset = InsertDataset(DEV_FILE, tokenizer)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    dev_loader = DataLoader(dev_dataset, batch_size=BATCH_SIZE)
+
+    optimizer = AdamW(model.parameters(), lr=LR)
+
+    SAVE_PATH = "/content/drive/MyDrive/Colab Notebooks/model_flaubert"
+    best_acc = 0.0
+
+    for epoch in range(EPOCHS):
+        model.train()
+        loop = tqdm(train_loader)
+
+        for batch in loop:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+            loss = outputs.loss
+
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            loop.set_description(f"Epoch {epoch + 1}")
+            loop.set_postfix(loss=loss.item())
+
+        acc = evaluate(model, dev_loader, device)
+        print("Validation accuracy:", acc)
+
+        if acc > best_acc:
+            best_acc = acc
+            model.save_pretrained(SAVE_PATH)
+            tokenizer.save_pretrained(SAVE_PATH)
+            print(f"Best model saved with dev acc = {best_acc:.4f}")
+
+
+if __name__ == "__main__":
+    train()</code></pre>
+            </div>
+        </details>
+
+        <!-- Script 14 : Évaluation FlauBERT -->
+        <details class="script-details">
+            <summary>
+                <span class="script-icon"></span>
+                <span class="script-title">Évaluation FlauBERT</span>
+                <span class="script-badge">Évaluation</span>
+            </summary>
+            <div class="script-content">
+                <p><strong>Objectif :</strong> Évaluer le modèle FlauBERT sur le dataset de test.</p>
+                
+                <pre><code class="language-python">import json
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from tqdm import tqdm
+
+TEST_FILE = "dataset_petit/test_small_balanced.jsonl"
+MODEL_PATH = "/content/drive/MyDrive/Colab Notebooks/model_flaubert"
+MAX_LEN = 512
+BATCH_SIZE = 8
+
+
+class InsertDataset(Dataset):
+    def __init__(self, file, tokenizer):
+        self.examples = []
+        self.tokenizer = tokenizer
+
+        with open(file, "r", encoding="utf-8") as f:
+            for line in f:
+                self.examples.append(json.loads(line))
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        ex = self.examples[idx]
+
+        sep = self.tokenizer.sep_token
+        text = ex["prev"] + " " + sep + " " + ex["insert"] + " " + sep + " " + ex["next"]
+
+        encoding = self.tokenizer(
+            text,
+            truncation=True,
+            padding="max_length",
+            max_length=MAX_LEN,
+            return_tensors="pt"
+        )
+
+        item = {k: v.squeeze(0) for k, v in encoding.items()}
+        item["labels"] = torch.tensor(ex["label"], dtype=torch.long)
+        return item
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+model.to(device)
+model.eval()
+
+dataset = InsertDataset(TEST_FILE, tokenizer)
+loader = DataLoader(dataset, batch_size=BATCH_SIZE)
+
+all_labels = []
+all_preds = []
+
+with torch.no_grad():
+    for batch in tqdm(loader, desc="Evaluating"):
+        labels = batch["labels"]
+
+        inputs = {k: v.to(device) for k, v in batch.items() if k != "labels"}
+        outputs = model(**inputs)
+
+        preds = torch.argmax(outputs.logits, dim=1)
+
+        all_preds.extend(preds.cpu().tolist())
+        all_labels.extend(labels.tolist())
+
+accuracy = accuracy_score(all_labels, all_preds)
+precision, recall, f1, _ = precision_recall_fscore_support(
+    all_labels,
+    all_preds,
+    average="binary",
+    pos_label=1,
+    zero_division=0
+)
+
+print(f"Accuracy  = {accuracy:.4f}")
+print(f"Precision = {precision:.4f}")
+print(f"Recall    = {recall:.4f}")
+print(f"F1        = {f1:.4f}")</code></pre>
+            </div>
+        </details>
+
+        <!-- Script 15 : Évaluation CamemBERT -->
+        <details class="script-details">
+            <summary>
+                <span class="script-icon"></span>
+                <span class="script-title">Évaluation CamemBERT</span>
+                <span class="script-badge">Évaluation</span>
+            </summary>
+            <div class="script-content">
+                <p><strong>Objectif :</strong> Évaluer le modèle CamemBERT sur le dataset de test.</p>
+                
+                <pre><code class="language-python">import json
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from tqdm import tqdm
+
+TEST_FILE = "dataset_petit/test_small_balanced.jsonl"
+MODEL_PATH = "/content/drive/MyDrive/Colab Notebooks/model"
+MAX_LEN = 512
+BATCH_SIZE = 8
+
+
+class InsertDataset(Dataset):
+    def __init__(self, file, tokenizer):
+        self.examples = []
+        self.tokenizer = tokenizer
+
+        with open(file, "r", encoding="utf-8") as f:
+            for line in f:
+                self.examples.append(json.loads(line))
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        ex = self.examples[idx]
+
+        sep = self.tokenizer.sep_token
+        text = ex["prev"] + " " + sep + " " + ex["insert"] + " " + sep + " " + ex["next"]
+
+        encoding = self.tokenizer(
+            text,
+            truncation=True,
+            padding="max_length",
+            max_length=MAX_LEN,
+            return_tensors="pt"
+        )
+
+        item = {k: v.squeeze(0) for k, v in encoding.items()}
+        item["labels"] = torch.tensor(ex["label"], dtype=torch.long)
+        return item
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+model.to(device)
+model.eval()
+
+dataset = InsertDataset(TEST_FILE, tokenizer)
+loader = DataLoader(dataset, batch_size=BATCH_SIZE)
+
+all_labels = []
+all_preds = []
+
+with torch.no_grad():
+    for batch in tqdm(loader, desc="Evaluating"):
+        labels = batch["labels"]
+
+        inputs = {k: v.to(device) for k, v in batch.items() if k != "labels"}
+        outputs = model(**inputs)
+
+        preds = torch.argmax(outputs.logits, dim=1)
+
+        all_preds.extend(preds.cpu().tolist())
+        all_labels.extend(labels.tolist())
+
+accuracy = accuracy_score(all_labels, all_preds)
+precision, recall, f1, _ = precision_recall_fscore_support(
+    all_labels,
+    all_preds,
+    average="binary",
+    pos_label=1,
+    zero_division=0
+)
+
+print(f"Accuracy  = {accuracy:.4f}")
+print(f"Precision = {precision:.4f}")
+print(f"Recall    = {recall:.4f}")
+print(f"F1        = {f1:.4f}")</code></pre>
+            </div>
+        </details>
+    </div>    
+
+{% endblock %}
+
+
+
+

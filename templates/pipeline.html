@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Architecture du Pipeline </h1>
+
+<p>Notre pipeline  est conçu pour évaluer la pertinence de l'insertion d'un paragraphe dans un texte existant. Il se décompose en 5 étapes clés :</p>
+
+<h2>1. Collecte et Structuration des données</h2>
+<p>Récupération de textes et formatage du corpus sous forme de triplets (contexte précédent, paragraphe à insérer, contexte suivant). Les données sont préparées au format JSONL et divisées en jeux d'entraînement, de validation et de test.</p>
+<p>Cette structuration a été réalisée via des scripts Python personnalisés (manipulation de chaînes de caractères et formatage JSON). Pour l'équilibrage, nous avons généré programmatiquement des exemples positifs (label 1 : la vraie place du paragraphe) et des exemples négatifs (label 0 : le paragraphe inséré au mauvais endroit). La division (split) en jeux de Train/Dev/Test a été effectuée de manière aléatoire et stratifiée (souvent via des bibliothèques comme scikit-learn ou la librairie datasets de Hugging Face) pour garantir une distribution équitable des labels.</p>
+
+<h2>2. Prétraitement et Tokenisation</h2>
+<p>Les données au format JSONL sont converties en tenseurs exploitables par le modèle, en trois étapes :</p>
+<ul>
+    <li><strong>Construction de l'entrée structurée :</strong> Les trois champs sont concaténés à l'aide du token séparateur <code>[SEP]</code> propre à chaque modèle, formant la structure suivante :<br>
+        <code>[PREV] [SEP] [INSERT] [SEP] [NEXT]</code><br>
+        Cette structure guide le mécanisme d'auto-attention à se concentrer sur la cohérence sémantique entre la phrase insérée et son contexte.
+    </li>
+    <li><strong>Tokenisation et alignement des séquences :</strong> Le texte est découpé en sous-mots à l'aide du tokenizer associé à chaque modèle. Pour garantir des dimensions uniformes lors du traitement par batch, la longueur maximale des séquences est contrôlée via le paramètre <code>max_length</code>, avec application d'un padding et d'une troncature.</li>
+    <li><strong>Tensorisation et préparation au batch :</strong> Les encodages sont convertis en tenseurs PyTorch après suppression des dimensions redondantes via <code>squeeze()</code>, et le label binaire correspondant est ajouté. Chaque exemple retourne un dictionnaire contenant <code>input_ids</code>, <code>attention_mask</code> et <code>labels</code>, offrant une interface standardisée pour le fine-tuning des différents modèles pré-entraînés.</li>
+</ul>
+
+<h2>3. Entraînement du Modèle</h2>
+<p>Afin d'obtenir les meilleures performances, nous avons entraîné et comparé quatre architectures de type Transformer : CamemBERT, FlauBERT, RoBERTa et BERT Multilingue.</p>
+<ul>
+    <p><strong>BERT Multilingue :</strong> Utilise un taux d'apprentissage de 2e-5, un batch size de 16 pour l’entraînement ainsi qu'une longueur maximale des séquences (max_length) de 512 et est entraîné sur 3 epochs.</p>
+    <li><strong>XLM-RoBERTa :</strong> Utilise un taux d'apprentissage de 2e-5, un batch size de 16 en entraînement et 32 en évaluation, une longueur maximale des séquences de 256, un weight decay de 0.01, et est entraîné sur 4 epochs.</li>
+    <li><strong>CamemBERT et FlauBERT :</strong> Utilisent l'optimiseur AdamW, un taux d'apprentissage de 2e-5, un batch size de 8, un entraînement sur 3 epochs et une longueur maximale des séquences de 512.</li>
+</ul>
+<p>Le processus d'entraînement est identique pour tous les modèles, à la fin de chaque epoch, la précision est calculée sur le jeu de validation, et les poids du modèle ayant obtenu les meilleures performances sont automatiquement sauvegardés, afin d'éviter le surapprentissage.</p>
+<p><strong>C'est finalement XLM-RoBERTa qui a été sélectionné comme modèle final</strong>, ayant démontré les meilleurs résultats globalement sur toutes les mesures sur nos données parmis les modeles multilingues que l'on a tester.</p>
+
+<h2>4. Évaluation des Performances</h2>
+<p>Pour évaluer nos modèles de manière complète, nous avons retenu les quatre métriques suivantes dans l'ordre : l’Accuracy, la précision, le rappel et le score F1. Les résultats obtenus sur le jeu de test sont les suivants :</p>
+
+<table border="1" cellpadding="10" cellspacing="0" style="width: 100%; text-align: center; border-collapse: collapse; margin-bottom: 20px;">
+    <thead style="background-color: #0b3d91;">
+        <tr>
+            <th>XLM-RoBERTa</th>
+            <th>74,41%</th>
+            <th>71,06%</th>
+            <th>82,36%</th>
+            <th>76,29%</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><strong>CamemBERT</strong></td>
+            <td>77,78 %</td>
+            <td>76,58 %</td>
+            <td>80,04 %</td>
+            <td>78,27 %</td>
+        </tr>
+        <tr>
+            <th>BertMultilingual</th>
+            <th>92,04%</th>
+            <th>9,63%</th>
+            <th>47,27%</th>
+            <th>16,00%</th>
+        </tr>
+        <tr>
+            <td><strong>FlauBERT</strong></td>
+            <td>62,05 %</td>
+            <td>61,57 %</td>
+            <td>64,12 %</td>
+            <td>62,82 %</td>
+        </tr>
+        <tr style="background-color: #0b3d91;">
+            <td><strong>XLM-RoBERTa</strong></td>
+            <td colspan="4"><strong>Sélectionné comme modèle final pour le déploiement</strong></td>
+        </tr>
+    </tbody>
+</table>
+<p>Au vu de ces résultats, c'est finalement <strong>XLM-RoBERTa</strong> qui a été sélectionné comme modèle final pour le déploiement.</p>
+
+<h2>5. Déploiement et Interface Web</h2>
+<p>Nous avons développé une application web basée sur le framework haute performance <strong>FastAPI</strong>. L'objectif central de ce système est de transformer le modèle XLM-RoBERTa entraîné en un outil d'aide à la rédaction intelligent et directement utilisable.</p>
+<p>Le cœur de l'interface repose sur un algorithme automatisé de prédiction de la position optimale d'insertion. Contrairement à un simple modèle de classification, nous avons implémenté au niveau du déploiement une logique de fenêtre glissante : lorsque l'utilisateur soumet un texte long et un paragraphe à insérer, le système découpe automatiquement le texte par lignes et utilise le modèle pour évaluer, position par position, le score de probabilité d'insertion. En calculant le score de confiance Softmax pour chaque position candidate, le système identifie précisément l'index optimal et restitue le résultat en temps réel via le moteur de templates Jinja2.</p>
+<p>Au niveau de l'interface utilisateur, nous avons utilisé HTML5 et le moteur de templates Jinja2 pour construire une interface simple et fonctionnelle. L'utilisateur peut y soumettre son texte et recevoir instantanément la suggestion de modification proposée par le modèle. Après avoir parcouru toutes les positions candidates, le système identifie automatiquement celle dont le score de confiance est le plus élevé, et restitue le résultat, le texte original ainsi que la position suggérée directement sur la page.</p>
+
+{% endblock %}

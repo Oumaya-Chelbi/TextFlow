@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h1>Observations et difficultés</h1>
+
+<p><strong>Pendant le projet, nous avons rencontré plusieurs difficultés :</strong></p>
+<ul>
+    <li>Prétraitement des textes avec des paragraphes vides ou très longs.</li>
+    <li>Conception du format d'entrée pour combiner trois segments de texte.</li>
+    <li>Gestion de la mémoire GPU pour l’entraînement des modeles.</li>
+    <li>Équilibrage des labels pour éviter un modèle biaisé (surapprentissage).</li>
+    <li>Choix du taux d'apprentissage adapté au fine-tuning.</li>
+    <li>Intégration du modèle dans FastAPI et affichage du résultat en HTML.</li>
+</ul>
+
+<p><strong>Solutions mises en place :</strong></p>
+<ul>
+    <li>Utiliser <code>SEP</code> comme séparateur entre les trois segments (texte avant, texte inséré, texte après), permettant au modèle de distinguer clairement les différentes parties de l'entrée.
+        <ul>
+            <p><code>sep = self.tokenizer.sep_token</code></p>
+            <p><code>text = ex["prev"] + " " + sep + " " + ex["insert"] + " " + sep + " " + ex["next"]</code></p>
+        </ul>
+    </li>
+    <li>Réduction du <code>batch size</code> pour équilibrer vitesse d'entraînement et stabilité de la convergence
+        <ul>
+            <p><code>BATCH_SIZE = ...</code></p>
+        </ul>
+    </li>
+    <li>Tronquer les textes trop longs avec <code>max_length</code>.
+        <ul>
+            <p><code>MAX_LEN = ...</code></p>
+        </ul>
+    </li>
+    <li>Choix d'un taux d'apprentissage correspondant avec <code>LR</code>.
+        <ul>
+            <p><code>LR = ...</code></p>
+        </ul>
+    </li>
+    <li>Vérification et nettoyage automatique des données.</li>
+    <li>Utilisation de DataLoader avec <code>pin_memory=True</code> pour accélérer le traitement.</li>
+</ul>
+
+<h2>Tentative de changement de stratégie : de la classification au ranking</h2>
+
+<p>
+Dans un premier temps, nous avons essayé d’aborder le problème comme une tâche de classification binaire classique : pour chaque position possible dans un article, le modèle devait prédire si c’était la bonne position (label 1) ou non (label 0). Cependant, on s’est rapidement rendu compte qu’il y avait un fort déséquilibre dans les données, avec énormément de labels 0 et très peu de labels 1. À cause de cela, le modèle a eu tendance à faire du surapprentissage en adoptant une stratégie “facile”, c’est-à-dire prédire presque toujours 0, ce qui donnait des performances trompeuses mais inutiles en pratique. Pour corriger ce problème, on a d’abord essayé d’ajuster la loss en suivant vos conseils afin de pénaliser davantage les erreurs sur les exemples positifs, ce qui rend le modèle plus strict lorsqu’il se trompe. Mais malgré cette amélioration, le problème venait aussi du fait que la formulation en classification n’était pas la plus adaptée à la tâche.
+</p>
+
+<p>
+C’est pour cette raison que nous avons reformulé le problème en tâche de ranking (en suivant vos conseils également). Au lieu de demander au modèle “est-ce que cette position est correcte ou non ?”, on lui demande plutôt de comparer des positions entre elles. Concrètement, pour chaque exemple, on prend une position correcte (exemple positif) et une position incorrecte (exemple négatif), et le modèle doit apprendre à donner un score plus élevé à la bonne position qu’à la mauvaise. Cette approche est plus naturelle pour ce type de problème, car elle correspond mieux à l’objectif final : trouver la meilleure position parmi plusieurs possibilités.
+</p>
+
+<p>
+Le script <code>train_ranking.py</code> implémente cette nouvelle approche. Il commence par séparer les exemples en deux groupes : les positifs (label = 1) et les négatifs (label = 0). Ensuite, pour chaque exemple positif, il associe aléatoirement un exemple négatif afin de créer une paire. Chaque élément de la paire est transformé en entrée pour le modèle en concaténant les paragraphes <code>prev</code>, <code>insert</code> et <code>next</code>, séparés par le token spécial [SEP] de BERT. Le modèle, ici <code>bert-base-multilingual-cased</code>, ne produit plus une classe mais un score unique (grâce à <code>num_labels=1</code>), qui représente à quel point la position est pertinente.
+</p>
+
+<p>
+Pendant l’entraînement, on calcule une <em>margin ranking loss</em> : l’idée est d’imposer que le score de l’exemple positif soit supérieur à celui du négatif d’au moins une certaine marge. Si ce n’est pas le cas, le modèle est pénalisé. Cela force le modèle à apprendre une hiérarchie entre les positions plutôt qu’une simple décision binaire. Enfin, une phase d’évaluation est réalisée à chaque epoch en vérifiant si, pour une paire (positif, négatif), le modèle donne bien un score plus élevé au positif. Cette métrique, appelée <em>ranking accuracy</em>, permet de mesurer directement la capacité du modèle à faire les bons choix de position.
+</p>
+
+<p>
+Au final, ce passage d’une classification binaire à un apprentissage par ranking a permis d’avoir pour ce  modèle de bien meilleur performance, en évitant les biais liés au déséquilibre des données. Malheureusement nous n'avons pas pu retenir ce modele car ses resultats rappel,F1score et précision n'était pas très bon et donc les résultats n'étaient pas très équilibrés.
+</p>
+
+<h2>Évaluation des modèles</h2>
+
+<ul>
+    <li><strong>XLM-RoBERTa</strong>
+        <p>Dans ce projet, nous avons utilisé le modèle XLM-RoBERTa (<code>xlm-roberta-base</code>) afin de traiter efficacement des données provenant de sources variées (Wikipedia, arXiv, PMC). Ce choix s’explique par le caractère multilingue de notre corpus, ce qui excluait l’utilisation de modèles uniquement francophones comme CamemBERT. Ce modèle a été retenu pour sa capacité à gérer plusieurs langues tout en conservant une bonne compréhension contextuelle.</p>
+
+        <p>En termes de comportement, le modèle s’est montré stable durant le fine-tuning. Malgré des performances légèrement inférieures à des modèles spécialisés en français, il reste un excellent compromis dans un contexte multilingue, avec une accuracy moyenne de 74,41.</p>
+    </li>
+
+    <li><strong>CamemBERT</strong>
+        <p>Le modèle CamemBERT a été testé dans un cadre francophone. Il a atteint une accuracy de 0,7778, une précision de 0,7658, un rappel de 0,8004 et un score F1 de 0,7827. Le rappel élevé montre une bonne capacité à détecter les positions pertinentes.</p>
+    </li>
+
+    <li><strong>Bert Multilingue</strong>
+        <p>Ce modèle multilingue a montré une bonne accuracy de 92% mais de mauvaises performances globales. </p>
+    </li>
+
+    <li><strong>FlauBERT</strong>
+        <p>FlauBERT a obtenu des performances plus modestes (accuracy de 0,6205 et F1 de 0,6282), probablement en raison de son entraînement principalement en français, ce qui le rend moins adapté à un corpus multilingue.</p>
+    </li>
+</ul>
+
+<h2>Ce que l’on aurait fait différemment</h2>
+
+<p>Si c’était à refaire, on aurait abordé le problème dès le départ comme une tâche de ranking, en comparant directement les paragraphes deux à deux, et en attribuant un score croissant au fur et à mesure qu’on se rapproche de la position correcte. En effet, on pense que le dataset aurait pu être conçu différemment dès le début, en structurant les exemples pour qu’ils soient directement adaptés à cette approche, plutôt que d’essayer de les corriger à posteriori avec le script d’entraînement comme ce que l'on a essayé de faire avec Bert Multilingue. Bien sûr, vu le temps limité, on n’a pas pu reconstruire l’ensemble du dataset dès le départ. Malgré cela, on a décidé de montrer notre tentative à cette solution, car les résultats, bien que perfectibles, restaient corrects (si on regarde uniquement l'accuracy), avec une accuracy moyenne de 0,92. De plus, par rapport à l’approche initiale, même si nous ne l'avons pas retenu on à pu voir que grâce à une tel approche le modèle s’est montré plus flexible, car il ne prédisait pas toujours la même position, ce qui était un problème auparavant.On aurait également intégré davantage de contexte avant et après la position d’insertion, ce qui aurait probablement amélioré la compréhension du modèle.Aussi on a remarqué que le modèle avait de meilleures performances en anglais qu’en français, probablement parce que le corpus était déséquilibré sur ces langues. Si on devait recommencer, on équilibrerait mieux le dataset pour avoir autant d’exemples en anglais qu’en français. Enfin, on avait essayé de réduire le dataset pour aller plus vite, comme on l’a mentionné dans la section sur les données. Cependant, l’accuracy du ranking était très médiocre sur ce petit dataset : par exemple, à la première époque, on avait une accuracy de 0,1950, puis 0,210 pour la deuxième et 0,210 pour la troisième. C’est pourquoi on a dû revenir au dataset complet. Avec ce dataset initial, on a observé une nette amélioration des performances : par exemple, l’accuracy est passée de 0,21 à 0,95. Bien qu’il ait fallu plus de temps, environ deux heures par epochs, on n’aurait pas pu atteindre ces résultats sans l’accès aux serveurs du LATTICE, où l'une d'entre nous réalise son stage (Oumaya). En somme, les performances finales montrent qu' avec un dataset plus large, et cette approche de ranking nous aurions pu peut-être obtenir des résultats bien plus solides.</p>
+<p>On trouve donc dommage qu'à cause du manque de temps et de capacité computationelle nous n'ayons pas pu tester cette approche avec XLM-RoBERTa qui aurait peut-être donner d'avantage de meilleur résultat avec une tel approche.</p>
+
+<h2>Limitations et contraintes</h2>
+
+<p>On a rencontré plusieurs limites techniques et temporelles au cours du projet. Au début, on n’avait pas accès à un GPU puissant, ce qui nous a forcés à travailler avec Kaggle et Google Colab (nous n'arrivions pas à télécharger les poids des models car il y'avait un pproblème avec Collab et celui-ci supprimait même les poids du modeles avant même que nous puissions trouver une solution pour les téléchargés). Ce n’est qu’ensuite, lorsque le laboratoire nous a permis d’utiliser leurs GPU, qu’on a pu avancer plus rapidement. Bien sûr, on a aussi été confrontés à un manque de temps, lié au fait qu’on réalise ce projet en même temps que notre stage, avec de nombreuses autres responsabilités à côté, ce qui a forcément influencé les choix méthodologiques. D’un point de vue technique, l’intégration de l’approche par ranking avec notre dataset n’a pas été évidente. Dans un premier temps, nous avons tenté d’ajuster la fonction de loss afin de mieux pénaliser les erreurs, mais cela ne s’est pas révélé suffisant pour corriger les déséquilibres observés. Nous avons donc expérimenté une reformulation du problème en ranking, avec BERT Multilingue. Cependant, les résultats obtenus sont restés peu satisfaisants, notamment en raison d’un fort déséquilibre des prédictions, avec des performances globalement peu exploitables malgré une accuracy élevée. </p> <p> Par la suite, nous avons privilégié le modèle XLM-RoBERTa, qui s’est montré plus stable et plus équilibré dans ses prédictions sur notre tâche. En raison des contraintes de temps et de ressources, nous n’avons pas pu réappliquer entièrement l’approche de ranking avec ce modèle, ce qui aurait pourtant été intéressant à explorer. Par ailleurs, l’utilisation d’un corpus multilingue a naturellement écarté certains modèles comme CamemBERT, limité au français. Enfin, les autres modèles testés ont été abandonnés soit pour des performances inférieures, soit pour un comportement moins convaincant lors des phases d’inférence. Ainsi, nos choix finaux ont été guidés à la fois par les résultats obtenus et par les contraintes pratiques rencontrées au cours du projet.</p>
+
+<h2>Perspectives futures </h2>
+
+<p>Dans une perspective future, on envisagerait d’élargir le nombre de langues présentes dans le dataset. En effet, on pourrait inclure des langues comme l’espagnol, ou d’autres, afin de rendre notre modèle véritablement multilingue. Cela permettrait de tester sa robustesse sur des contextes encore plus divers. On pourrait également varier davantage les types d’articles, car actuellement, on s’est appuyés sur des articles scientifiques et encyclopédiques. En incorporant d’autres types de données, comme des articles de presse, des récits ou des contenus narratifs, le modèle pourrait mieux comprendre les dynamiques de cohérence dans différents genres textuels. Ainsi, on adapterait le dataset dès le départ, en équilibrant les langues et les types d’articles, pour renforcer la capacité du modèle à insérer les paragraphes de manière cohérente, quel que soit le contexte ou la langue.</p>
+
+
+
+{% endblock %}
+

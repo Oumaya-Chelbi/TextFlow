@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+
+<h1>Tester nos modèles</h1>
+
+<p style="max-width: 800px;">
+Dans cette interface, nous avons choisi de permettre le test de nos deux modèles différents : un modèle de classification basé sur RoBERTa et un modèle BERT Multilingue basé sur une approche de ranking. 
+Même si, comme expliqué dans les pages <em>Observations</em> et <em>Pipeline</em>, le modèle de ranking n’obtient pas forcément de bonnes métriques globales, nous avons constaté qu’il pouvait parfois proposer des insertions plus pertinentes. 
+Nous avons donc trouvé intéressant de laisser la possibilité de comparer les deux approches directement, afin de mieux illustrer leurs différences de comportement.
+</p>
+
+<form method="post" class="form-container">
+
+    <label>Choix du modèle :</label>
+    <select name="model_choice">
+        <option value="roberta" {% if model_choice is not defined or model_choice == "roberta" %}selected{% endif %}>
+            RoBERTa
+        </option>
+        <option value="ranking" {% if model_choice == "ranking" %}selected{% endif %}>
+            Ranking
+        </option>
+    </select>
+
+    <label>Texte principal :</label>
+    <textarea name="text" placeholder="Collez votre texte ici...">{{ text if text else "" }}</textarea>
+
+    <label>Paragraphe à insérer :</label>
+    <textarea name="paragraph" placeholder="Entrez le paragraphe à insérer...">{{ paragraph if paragraph else "" }}</textarea>
+
+    <button type="submit">Lancer le modèle</button>
+
+</form>
+
+{% if result %}
+<div class="result-container">
+    <h3>Résultat</h3>
+
+    <p><strong>Position suggérée :</strong> {{ result.position }}</p>
+    <p><strong>Score :</strong> {{ result.score }}</p>
+
+    <p><strong>Texte modifié :</strong></p>
+    <div class="result-box">
+        <pre>{{ result.text_modified }}</pre>
+    </div>
+</div>
+{% endif %}
+
+<style>
+
+/* ===== FORMULAIRE ===== */
+.form-container {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    max-width: 800px;
+}
+
+textarea {
+    width: 100%;
+    min-height: 120px;
+    resize: vertical;
+    padding: 10px;
+    font-family: "Georgia", serif;
+    border-radius: 8px;
+    border: 1px solid #ccc;
+}
+
+select {
+    width: 200px;
+    padding: 5px;
+    border-radius: 6px;
+}
+
+/* ===== BOUTON ===== */
+button {
+    width: 200px;
+    padding: 10px;
+    border: none;
+    border-radius: 8px;
+    background: #2c5364;
+    color: white;
+    cursor: pointer;
+}
+
+button:hover {
+    background: #203a43;
+}
+
+/* ===== RESULTAT ===== */
+.result-container {
+    margin-top: 30px;
+    max-width: 900px;
+}
+
+.result-box {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 400px;
+
+    background: #f5f5f5;
+    padding: 15px;
+    border-radius: 10px;
+    border: 1px solid #ddd;
+}
+
+pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    margin: 0;
+}
+
+</style>
+
+{% endblock %}
